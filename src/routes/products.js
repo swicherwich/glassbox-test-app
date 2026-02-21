@@ -5,13 +5,13 @@ const validationService = require('../services/validationService');
 const authMiddleware = require('../middleware/authMiddleware');
 
 // GET /api/products — list products (spec: "both")
-router.get('/', async (req, res) => {
+async function listProducts(req, res) {
   const products = await inventoryService.listProducts(req.query);
   res.status(200).json(products);
-});
+}
 
 // GET /api/products/:id — get single product (spec: "both")
-router.get('/:id', async (req, res) => {
+async function getProduct(req, res) {
   const product = await inventoryService.getProduct(req.params.id);
 
   if (!product) {
@@ -19,11 +19,11 @@ router.get('/:id', async (req, res) => {
   }
 
   res.status(200).json(product);
-});
+}
 
 // POST /api/products — create product (admin only) (spec: "both")
 // Flow: auth → validate → inventoryService.createProduct → db → audit
-router.post('/', async (req, res) => {
+async function createProduct(req, res) {
   const auth = await authMiddleware.requireAdmin(req.headers);
 
   if (!auth.authorized) {
@@ -46,10 +46,10 @@ router.post('/', async (req, res) => {
 
   const product = await inventoryService.createProduct({ name, sku, price, quantity });
   res.status(201).json(product);
-});
+}
 
 // POST /api/products/reserve — reserve inventory for an order (cross-service target)
-router.post('/reserve', async (req, res) => {
+async function reserveProducts(req, res) {
   const { items } = req.body;
 
   if (!items) {
@@ -63,10 +63,10 @@ router.post('/reserve', async (req, res) => {
   }
 
   res.status(200).json({ reserved: true, reservationId: result.reservationId });
-});
+}
 
 // PUT /api/products/:id — update product (spec: "both")
-router.put('/:id', async (req, res) => {
+async function updateProduct(req, res) {
   const auth = await authMiddleware.requireAdmin(req.headers);
 
   if (!auth.authorized) {
@@ -84,6 +84,12 @@ router.put('/:id', async (req, res) => {
 
   const updated = await inventoryService.updateProduct(req.params.id, req.body);
   res.status(200).json(updated);
-});
+}
+
+router.get('/', listProducts);
+router.get('/:id', getProduct);
+router.post('/', createProduct);
+router.post('/reserve', reserveProducts);
+router.put('/:id', updateProduct);
 
 module.exports = router;

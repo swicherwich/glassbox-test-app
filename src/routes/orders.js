@@ -4,7 +4,7 @@ const orderService = require('../services/orderService');
 const authMiddleware = require('../middleware/authMiddleware');
 
 // GET /api/orders — list orders (spec: "both")
-router.get('/', async (req, res) => {
+async function listOrders(req, res) {
   const auth = await authMiddleware.authenticateRequest(req.headers);
 
   if (!auth.authenticated) {
@@ -13,10 +13,10 @@ router.get('/', async (req, res) => {
 
   const orders = await orderService.listOrders(req.query);
   res.status(200).json(orders);
-});
+}
 
 // GET /api/orders/:id — get single order (spec: "both")
-router.get('/:id', async (req, res) => {
+async function getOrder(req, res) {
   const auth = await authMiddleware.authenticateRequest(req.headers);
 
   if (!auth.authenticated) {
@@ -30,11 +30,11 @@ router.get('/:id', async (req, res) => {
   }
 
   res.status(200).json(order);
-});
+}
 
 // POST /api/orders — create order (spec: "both")
 // Deepest flow: handler → auth → validate → pricing(→discount→eligible→tax) → axios(inventory) → axios(payment) → db → audit(→logEvent→db) → notify(→axios→db→audit)
-router.post('/', async (req, res) => {
+async function createOrder(req, res) {
   const auth = await authMiddleware.authenticateRequest(req.headers);
 
   if (!auth.authenticated) {
@@ -67,10 +67,10 @@ router.post('/', async (req, res) => {
     }
     throw new Error('Unexpected order creation failure');
   }
-});
+}
 
 // PUT /api/orders/:id — update order status (spec: "both")
-router.put('/:id', async (req, res) => {
+async function updateOrder(req, res) {
   const auth = await authMiddleware.authenticateRequest(req.headers);
 
   if (!auth.authenticated) {
@@ -95,10 +95,10 @@ router.put('/:id', async (req, res) => {
 
   const updated = await orderService.updateOrderStatus(req.params.id, status);
   res.status(200).json(updated);
-});
+}
 
 // DELETE /api/orders/:id — cancel order (spec: "both")
-router.delete('/:id', async (req, res) => {
+async function cancelOrder(req, res) {
   const auth = await authMiddleware.requireAdmin(req.headers);
 
   if (!auth.authorized) {
@@ -120,6 +120,12 @@ router.delete('/:id', async (req, res) => {
 
   await orderService.cancelOrder(req.params.id);
   res.status(204).send();
-});
+}
+
+router.get('/', listOrders);
+router.get('/:id', getOrder);
+router.post('/', createOrder);
+router.put('/:id', updateOrder);
+router.delete('/:id', cancelOrder);
 
 module.exports = router;

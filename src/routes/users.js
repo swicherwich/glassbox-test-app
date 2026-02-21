@@ -7,7 +7,7 @@ const notificationService = require('../services/notificationService');
 const auditLogger = require('../utils/auditLogger');
 
 // GET /api/users/:id — get user profile (spec: "both")
-router.get('/:id', async (req, res) => {
+async function getUser(req, res) {
   const auth = await authMiddleware.authenticateRequest(req.headers);
 
   if (!auth.authenticated) {
@@ -21,11 +21,11 @@ router.get('/:id', async (req, res) => {
   }
 
   res.status(200).json(user);
-});
+}
 
 // POST /api/users — register user (spec: "both")
 // Flow: validate → db.execute → db.scalar → notify(→axios→db) → audit
-router.post('/', async (req, res) => {
+async function registerUser(req, res) {
   const { email, password, name } = req.body;
 
   const validation = await validationService.validateUserInput(email, password, name);
@@ -51,10 +51,10 @@ router.post('/', async (req, res) => {
   await auditLogger.logEvent('user_registered', { userId: user.id, email });
 
   res.status(201).json(user);
-});
+}
 
 // PUT /api/users/:id — update user profile (spec: "both")
-router.put('/:id', async (req, res) => {
+async function updateUser(req, res) {
   const auth = await authMiddleware.authenticateRequest(req.headers);
 
   if (!auth.authenticated) {
@@ -81,10 +81,10 @@ router.put('/:id', async (req, res) => {
   await auditLogger.logEvent('user_updated', { userId: req.params.id });
 
   res.status(200).json(updated);
-});
+}
 
 // DELETE /api/users/:id — delete user (admin only) (spec: "both")
-router.delete('/:id', async (req, res) => {
+async function deleteUser(req, res) {
   const auth = await authMiddleware.requireAdmin(req.headers);
 
   if (!auth.authorized) {
@@ -105,6 +105,11 @@ router.delete('/:id', async (req, res) => {
   await auditLogger.logEvent('user_deleted', { userId: req.params.id, deletedBy: auth.user.id });
 
   res.status(204).send();
-});
+}
+
+router.get('/:id', getUser);
+router.post('/', registerUser);
+router.put('/:id', updateUser);
+router.delete('/:id', deleteUser);
 
 module.exports = router;

@@ -12,9 +12,11 @@ app.use('/api/products', productRoutes);
 app.use('/api/users', userRoutes);
 
 // Code-only endpoint — NOT in openapi.yaml → triggers spec drift (source="code")
-app.get('/api/health', (req, res) => {
+function healthCheck(req, res) {
   res.status(200).json({ status: 'ok' });
-});
+}
+
+app.get('/api/health', healthCheck);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
