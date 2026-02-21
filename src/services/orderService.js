@@ -1,5 +1,10 @@
 const axios = require('axios');
 const db = require('../db/database');
+const validationService = require('./validationService');
+const pricingService = require('./pricingService');
+const inventoryService = require('./inventoryService');
+const notificationService = require('./notificationService');
+const auditLogger = require('../utils/auditLogger');
 
 const INVENTORY_BASE_URL = process.env.INVENTORY_BASE_URL || 'http://localhost:3000';
 const PAYMENT_API_URL = process.env.PAYMENT_API_URL || 'https://payments.external.com';
@@ -14,16 +19,16 @@ async function getOrderById(id) {
   return order;
 }
 
-// Multi-step flow: validate → db.query(customer) → axios.post(inventory) → axios.post(payment) → db.execute(insert)
+// Deep multi-step flow: validate → pricing → inventory → payment → db → audit → notify
 async function createOrder(customerId, items, shippingAddress) {
-  // Step 1: verify customer exists
-  const customer = await db.scalar('SELECT * FROM users WHERE id = $1', [customerId]);
-  if (!customer) {
-    throw new Error('Customer not found');
+  // Step 1: validate input (depth +1 → validationService.validateOrderInput → db.scalar)
+  const validation = await validationService.validateOrderInput(customerId, items, shippingAddress);
+  if (!validation.valid) {
+    throw new Error('Validation failed: ' + validation.errors.join(', '));
   }
 
-  // Step 2: calculate totals
-  const total = await calculateOrderTotal(items);
+  // Step 2: calculate pricing (depth +1 → pricingService.calculateTotal → applyDiscount → countEligibleItems → calculateTax)
+  const pricing = await pricingService.calculateTotal(items);
 
   // Step 3: reserve inventory — cross-service call to /api/products/reserve
   const inventoryRes = await axios.post(INVENTORY_BASE_URL + '/api/products/reserve', {
@@ -38,7 +43,7 @@ async function createOrder(customerId, items, shippingAddress) {
 
   // Step 4: charge payment — external API call → ghost node
   const paymentRes = await axios.post(PAYMENT_API_URL + '/v1/charges', {
-    amount: total,
+    amount: pricing.total,
     customerId: customerId,
     currency: 'usd',
   });
@@ -51,8 +56,8 @@ async function createOrder(customerId, items, shippingAddress) {
 
   // Step 5: persist order to database
   await db.execute(
-    'INSERT INTO orders (customer_id, items, total, shipping_address, payment_id, status) VALUES ($1, $2, $3, $4, $5, $6)',
-    [customerId, JSON.stringify(items), total, shippingAddress, paymentRes.data.paymentId, 'confirmed']
+    'INSERT INTO orders (customer_id, items, subtotal, discount, tax, total, shipping_address, payment_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+    [customerId, JSON.stringify(items), pricing.subtotal, pricing.discount, pricing.tax, pricing.total, shippingAddress, paymentRes.data.paymentId, 'confirmed']
   );
 
   const order = await db.scalar(
@@ -60,8 +65,11 @@ async function createOrder(customerId, items, shippingAddress) {
     [paymentRes.data.paymentId]
   );
 
-  // Step 6: send confirmation — gap node (dynamicHandler is not defined anywhere)
-  await sendOrderConfirmation(order);
+  // Step 6: audit trail (depth +1 → auditLogger.logOrderEvent → auditLogger.logEvent → db.execute)
+  await auditLogger.logOrderEvent(order.id, 'created', { total: pricing.total });
+
+  // Step 7: send confirmation notification (depth +1 → notificationService → axios.post external)
+  await notificationService.sendOrderConfirmation(order, validation.customer);
 
   return order;
 }
@@ -70,8 +78,10 @@ async function updateOrderStatus(id, status) {
   await db.execute('UPDATE orders SET status = $1 WHERE id = $2', [status, id]);
   const order = await db.scalar('SELECT * FROM orders WHERE id = $1', [id]);
 
-  // Notify customer about status change — calls notificationService
-  const notificationService = require('./notificationService');
+  // Audit trail
+  await auditLogger.logOrderEvent(id, 'status_changed', { newStatus: status });
+
+  // Notify customer about status change
   await notificationService.sendStatusUpdate(order);
 
   return order;
@@ -90,21 +100,12 @@ async function cancelOrder(id) {
   await axios.post(PAYMENT_API_URL + '/v1/refunds', {
     paymentId: order.payment_id,
   });
-}
 
-// Gap node: this function is called but never defined in any file
-async function sendOrderConfirmation(order) {
-  await dynamicHandler('email', order);
-}
+  // Audit trail
+  await auditLogger.logOrderEvent(id, 'cancelled', {});
 
-// Local helper — resolved normally
-async function calculateOrderTotal(items) {
-  let total = 0;
-  for (const item of items) {
-    const product = await db.scalar('SELECT price FROM products WHERE id = $1', [item.productId]);
-    total += product.price * item.quantity;
-  }
-  return total;
+  // Notify customer
+  await notificationService.sendStatusUpdate(order);
 }
 
 module.exports = {

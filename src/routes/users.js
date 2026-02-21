@@ -1,9 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db/database');
+const authMiddleware = require('../middleware/authMiddleware');
+const validationService = require('../services/validationService');
+const notificationService = require('../services/notificationService');
+const auditLogger = require('../utils/auditLogger');
 
 // GET /api/users/:id — get user profile (spec: "both")
 router.get('/:id', async (req, res) => {
+  const auth = await authMiddleware.authenticateRequest(req.headers);
+
+  if (!auth.authenticated) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const user = await db.scalar('SELECT * FROM users WHERE id = $1', [req.params.id]);
 
   if (!user) {
@@ -14,24 +24,17 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/users — register user (spec: "both")
+// Flow: validate → db.execute → db.scalar → notify(→axios→db) → audit
 router.post('/', async (req, res) => {
   const { email, password, name } = req.body;
 
-  if (!email) {
-    return res.status(400).json({ error: 'email is required' });
-  }
+  const validation = await validationService.validateUserInput(email, password, name);
 
-  if (!password) {
-    return res.status(400).json({ error: 'password is required' });
-  }
-
-  if (!name) {
-    return res.status(400).json({ error: 'name is required' });
-  }
-
-  const existing = await db.scalar('SELECT id FROM users WHERE email = $1', [email]);
-  if (existing) {
-    return res.status(409).json({ error: 'User with this email already exists' });
+  if (!validation.valid) {
+    if (validation.conflict) {
+      return res.status(409).json({ error: validation.errors[0] });
+    }
+    return res.status(400).json({ error: validation.errors.join(', ') });
   }
 
   await db.execute(
@@ -40,23 +43,31 @@ router.post('/', async (req, res) => {
   );
 
   const user = await db.scalar('SELECT * FROM users WHERE email = $1', [email]);
+
+  // Send welcome email (depth +1 → notificationService → axios → db)
+  await notificationService.sendWelcomeEmail(user);
+
+  // Audit trail
+  await auditLogger.logEvent('user_registered', { userId: user.id, email });
+
   res.status(201).json(user);
 });
 
 // PUT /api/users/:id — update user profile (spec: "both")
 router.put('/:id', async (req, res) => {
+  const auth = await authMiddleware.authenticateRequest(req.headers);
+
+  if (!auth.authenticated) {
+    return res.status(401).json({ error: 'Unauthorized — token required' });
+  }
+
   const user = await db.scalar('SELECT * FROM users WHERE id = $1', [req.params.id]);
 
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
 
-  if (!req.headers.authorization) {
-    return res.status(401).json({ error: 'Unauthorized — token required' });
-  }
-
-  const tokenUserId = parseToken(req.headers.authorization);
-  if (tokenUserId !== req.params.id && !user.isAdmin) {
+  if (auth.user.id !== req.params.id && !auth.user.is_admin) {
     return res.status(403).json({ error: 'Forbidden — can only update own profile' });
   }
 
@@ -66,19 +77,21 @@ router.put('/:id', async (req, res) => {
   );
 
   const updated = await db.scalar('SELECT * FROM users WHERE id = $1', [req.params.id]);
+
+  await auditLogger.logEvent('user_updated', { userId: req.params.id });
+
   res.status(200).json(updated);
 });
 
 // DELETE /api/users/:id — delete user (admin only) (spec: "both")
 router.delete('/:id', async (req, res) => {
-  if (!req.headers.authorization) {
+  const auth = await authMiddleware.requireAdmin(req.headers);
+
+  if (!auth.authorized) {
+    if (auth.reason === 'not_admin') {
+      return res.status(403).json({ error: 'Forbidden — admin access required' });
+    }
     return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const requestingUser = await getAuthenticatedUser(req.headers.authorization);
-
-  if (!requestingUser.isAdmin) {
-    return res.status(403).json({ error: 'Forbidden — admin access required' });
   }
 
   const target = await db.scalar('SELECT * FROM users WHERE id = $1', [req.params.id]);
@@ -88,6 +101,9 @@ router.delete('/:id', async (req, res) => {
   }
 
   await db.execute('DELETE FROM users WHERE id = $1', [req.params.id]);
+
+  await auditLogger.logEvent('user_deleted', { userId: req.params.id, deletedBy: auth.user.id });
+
   res.status(204).send();
 });
 

@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const inventoryService = require('../services/inventoryService');
+const validationService = require('../services/validationService');
+const authMiddleware = require('../middleware/authMiddleware');
 
 // GET /api/products — list products (spec: "both")
 router.get('/', async (req, res) => {
@@ -20,24 +22,26 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/products — create product (admin only) (spec: "both")
+// Flow: auth → validate → inventoryService.createProduct → db → audit
 router.post('/', async (req, res) => {
+  const auth = await authMiddleware.requireAdmin(req.headers);
+
+  if (!auth.authorized) {
+    if (auth.reason === 'not_admin') {
+      return res.status(403).json({ error: 'Forbidden — admin access required' });
+    }
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const { name, sku, price, quantity } = req.body;
 
-  if (!name) {
-    return res.status(400).json({ error: 'name is required' });
-  }
+  const validation = await validationService.validateProductInput(name, sku, price);
 
-  if (!sku) {
-    return res.status(400).json({ error: 'sku is required' });
-  }
-
-  if (!price) {
-    return res.status(400).json({ error: 'price is required' });
-  }
-
-  const existing = await inventoryService.getProductBySku(sku);
-  if (existing) {
-    return res.status(409).json({ error: 'Product with this SKU already exists' });
+  if (!validation.valid) {
+    if (validation.conflict) {
+      return res.status(409).json({ error: validation.errors[0] });
+    }
+    return res.status(400).json({ error: validation.errors.join(', ') });
   }
 
   const product = await inventoryService.createProduct({ name, sku, price, quantity });
@@ -63,6 +67,15 @@ router.post('/reserve', async (req, res) => {
 
 // PUT /api/products/:id — update product (spec: "both")
 router.put('/:id', async (req, res) => {
+  const auth = await authMiddleware.requireAdmin(req.headers);
+
+  if (!auth.authorized) {
+    if (auth.reason === 'not_admin') {
+      return res.status(403).json({ error: 'Forbidden — admin access required' });
+    }
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const product = await inventoryService.getProduct(req.params.id);
 
   if (!product) {

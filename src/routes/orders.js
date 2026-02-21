@@ -1,15 +1,28 @@
 const express = require('express');
 const router = express.Router();
 const orderService = require('../services/orderService');
+const authMiddleware = require('../middleware/authMiddleware');
 
 // GET /api/orders — list orders (spec: "both")
 router.get('/', async (req, res) => {
+  const auth = await authMiddleware.authenticateRequest(req.headers);
+
+  if (!auth.authenticated) {
+    return res.status(401).json({ error: 'Unauthorized — token required' });
+  }
+
   const orders = await orderService.listOrders(req.query);
   res.status(200).json(orders);
 });
 
 // GET /api/orders/:id — get single order (spec: "both")
 router.get('/:id', async (req, res) => {
+  const auth = await authMiddleware.authenticateRequest(req.headers);
+
+  if (!auth.authenticated) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const order = await orderService.getOrderById(req.params.id);
 
   if (!order) {
@@ -20,8 +33,14 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/orders — create order (spec: "both")
-// Multi-step flow: validate → db.query → axios(inventory) → axios(payment) → db.execute
+// Deepest flow: handler → auth → validate → pricing(→discount→eligible→tax) → axios(inventory) → axios(payment) → db → audit(→logEvent→db) → notify(→axios→db→audit)
 router.post('/', async (req, res) => {
+  const auth = await authMiddleware.authenticateRequest(req.headers);
+
+  if (!auth.authenticated) {
+    return res.status(401).json({ error: 'Unauthorized — token required' });
+  }
+
   const { customerId, items, shippingAddress } = req.body;
 
   if (!customerId) {
@@ -52,6 +71,12 @@ router.post('/', async (req, res) => {
 
 // PUT /api/orders/:id — update order status (spec: "both")
 router.put('/:id', async (req, res) => {
+  const auth = await authMiddleware.authenticateRequest(req.headers);
+
+  if (!auth.authenticated) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const { status } = req.body;
 
   if (!status) {
@@ -74,6 +99,15 @@ router.put('/:id', async (req, res) => {
 
 // DELETE /api/orders/:id — cancel order (spec: "both")
 router.delete('/:id', async (req, res) => {
+  const auth = await authMiddleware.requireAdmin(req.headers);
+
+  if (!auth.authorized) {
+    if (auth.reason === 'not_admin') {
+      return res.status(403).json({ error: 'Forbidden — admin access required' });
+    }
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   const order = await orderService.getOrderById(req.params.id);
 
   if (!order) {
